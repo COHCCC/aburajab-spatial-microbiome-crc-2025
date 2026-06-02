@@ -1,0 +1,383 @@
+---
+title: "SampleIntegration"
+output: html_document
+date: "2026-02-17"
+---
+
+```{r}
+library(Seurat)
+library(SeuratObject)
+library(harmony)
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(Matrix)
+library(ggplot2)
+library(patchwork)
+library(ggthemes)
+```
+
+```{r}
+scripts_path <- "path/to/scripts"
+source_dir <- "path/to/source/files"
+out_dir <- "path/to/output/files"
+```
+
+# Import 10X data
+```{r}
+
+DLS_CRC_03_norm <- file.path(source_dir, "Microbiome-v1_DLS_CRC_03_separate/DLS_CRC_03_Normal/outs")
+DLS_CRC_03_tumor <- file.path(source_dir, "Microbiome-v1_DLS_CRC_03_separate/DLS_CRC_03_Tumor/outs")
+DLS_CRC_06_norm <- file.path(source_dir, "Microbiome-v1_DLS_CRC_06-07-08_separate/DLS_CRC_06_Normal/outs")
+DLS_CRC_07_tumor <- file.path(source_dir, "Microbiome-v1_DLS_CRC_06-07-08_separate/DLS_CRC_07_Tumor/outs")
+DLS_CRC_08_norm <- file.path(source_dir, "Microbiome-v1_DLS_CRC_06-07-08_separate/DLS_CRC_08_Normal/outs")
+DLS_CRC_08_tumor <- file.path(source_dir, "Microbiome-v1_DLS_CRC_06-07-08_separate/DLS_CRC_08_Tumor/outs")
+```
+
+```{r}
+DLS_CRC_03_norm_visium <- Load10X_Spatial(data.dir = DLS_CRC_03_norm)
+DLS_CRC_03_tumor_visium <- Load10X_Spatial(data.dir = DLS_CRC_03_tumor)
+DLS_CRC_06_norm_visium <- Load10X_Spatial(data.dir = DLS_CRC_06_norm)
+DLS_CRC_07_tumor_visium <- Load10X_Spatial(data.dir = DLS_CRC_07_tumor)
+DLS_CRC_08_norm_visium <- Load10X_Spatial(data.dir = DLS_CRC_08_norm)
+DLS_CRC_08_tumor_visium <- Load10X_Spatial(data.dir = DLS_CRC_08_tumor)
+```
+
+```{r}
+Idents(DLS_CRC_03_norm_visium) <- "DLS_CRC_03_Normal"
+Idents(DLS_CRC_03_tumor_visium) <- "DLS_CRC_03_Tumor"
+Idents(DLS_CRC_06_norm_visium) <- "DLS_CRC_06_Normal"
+Idents(DLS_CRC_07_tumor_visium) <- "DLS_CRC_07_Tumor"
+Idents(DLS_CRC_08_norm_visium) <- "DLS_CRC_08_Normal"
+Idents(DLS_CRC_08_tumor_visium) <- "DLS_CRC_08_Tumor"
+
+DLS_CRC_03_norm_visium$sample <- "DLS_CRC_03_Normal"
+DLS_CRC_03_tumor_visium$sample <- "DLS_CRC_03_Tumor"
+DLS_CRC_06_norm_visium$sample <- "DLS_CRC_06_Normal"
+DLS_CRC_07_tumor_visium$sample <- "DLS_CRC_07_Tumor"
+DLS_CRC_08_norm_visium$sample <- "DLS_CRC_08_Normal"
+DLS_CRC_08_tumor_visium$sample <-"DLS_CRC_08_Tumor"
+```
+
+```{r}
+# Remove Strep probe 10 as a feature
+remove <- "Streptococcaceae-probe10"
+
+DLS_CRC_03_norm_visium <- subset(DLS_CRC_03_norm_visium, features = setdiff(rownames(DLS_CRC_03_norm_visium), remove))
+DLS_CRC_03_tumor_visium <- subset(DLS_CRC_03_tumor_visium, features = setdiff(rownames(DLS_CRC_03_tumor_visium), remove))
+DLS_CRC_06_norm_visium <- subset(DLS_CRC_06_norm_visium, features = setdiff(rownames(DLS_CRC_06_norm_visium), remove))
+DLS_CRC_07_tumor_visium <- subset(DLS_CRC_07_tumor_visium, features = setdiff(rownames(DLS_CRC_07_tumor_visium), remove))
+DLS_CRC_08_norm_visium <- subset(DLS_CRC_08_norm_visium, features = setdiff(rownames(DLS_CRC_08_norm_visium), remove))
+DLS_CRC_08_tumor_visium <- subset(DLS_CRC_08_tumor_visium, features = setdiff(rownames(DLS_CRC_08_tumor_visium), remove))
+```
+
+```{r}
+DLS_CRC_03_norm_visium[["percent_mt"]] <- PercentageFeatureSet(DLS_CRC_03_norm_visium, pattern = "^MT-")
+DLS_CRC_03_tumor_visium[["percent_mt"]] <- PercentageFeatureSet(DLS_CRC_03_tumor_visium, pattern = "^MT-")
+DLS_CRC_06_norm_visium[["percent_mt"]] <- PercentageFeatureSet(DLS_CRC_06_norm_visium, pattern = "^MT-")
+DLS_CRC_07_tumor_visium[["percent_mt"]] <- PercentageFeatureSet(DLS_CRC_07_tumor_visium, pattern = "^MT-")
+DLS_CRC_08_norm_visium[["percent_mt"]] <- PercentageFeatureSet(DLS_CRC_08_norm_visium, pattern = "^MT-")
+DLS_CRC_08_tumor_visium[["percent_mt"]] <- PercentageFeatureSet(DLS_CRC_08_tumor_visium, pattern = "^MT-")
+```
+
+```{r}
+VlnPlot(DLS_CRC_03_norm_visium,features = c("nCount_Spatial", "nFeature_Spatial", "percent_mt"), pt.size = 0.1, ncol = 3) + NoLegend()
+VlnPlot(DLS_CRC_03_tumor_visium,features = c("nCount_Spatial", "nFeature_Spatial", "percent_mt"), pt.size = 0.1, ncol = 3) + NoLegend()
+VlnPlot(DLS_CRC_06_norm_visium,features = c("nCount_Spatial", "nFeature_Spatial", "percent_mt"), pt.size = 0.1, ncol = 3) + NoLegend()
+VlnPlot(DLS_CRC_07_tumor_visium,features = c("nCount_Spatial", "nFeature_Spatial", "percent_mt"), pt.size = 0.1, ncol = 3) + NoLegend()
+VlnPlot(DLS_CRC_08_norm_visium,features = c("nCount_Spatial", "nFeature_Spatial", "percent_mt"), pt.size = 0.1, ncol = 3) + NoLegend()
+VlnPlot(DLS_CRC_08_tumor_visium,features = c("nCount_Spatial", "nFeature_Spatial", "percent_mt"), pt.size = 0.1, ncol = 3) + NoLegend()
+```
+
+```{r}
+hist(DLS_CRC_03_norm_visium$nCount_Spatial, breaks = 200, main = "DLS_CRC_03_Normal nCount_Spatial Distribution", xlab = "Total UMI per spot")
+hist(DLS_CRC_03_tumor_visium$nCount_Spatial, breaks = 200, main = "DLS_CRC_03_Tumor nCount_Spatial Distribution", xlab = "Total UMI per spot")
+hist(DLS_CRC_06_norm_visium$nCount_Spatial, breaks = 200, main = "DLS_CRC_06_Normal nCount_Spatial Distribution", xlab = "Total UMI per spot")
+hist(DLS_CRC_07_tumor_visium$nCount_Spatial, breaks = 200, main = "DLS_CRC_07_Tumor nCount_Spatial Distribution", xlab = "Total UMI per spot")
+hist(DLS_CRC_08_norm_visium$nCount_Spatial, breaks = 200, main = "DLS_CRC_08_Normal nCount_Spatial Distribution", xlab = "Total UMI per spot")
+hist(DLS_CRC_08_tumor_visium$nCount_Spatial, breaks = 200, main = "DLS_CRC_08_Tumor nCount_Spatial Distribution", xlab = "Total UMI per spot")
+```
+
+```{r}
+DLS_CRC_03_norm_QC <- subset(DLS_CRC_03_norm_visium, subset = nCount_Spatial > 20)
+DLS_CRC_03_tumor_QC <- subset(DLS_CRC_03_tumor_visium, subset = nCount_Spatial > 20)
+DLS_CRC_06_norm_QC <- subset(DLS_CRC_06_norm_visium, subset = nCount_Spatial > 50)
+DLS_CRC_07_tumor_QC <- subset(DLS_CRC_07_tumor_visium, subset = nCount_Spatial > 50)
+DLS_CRC_08_norm_QC <- subset(DLS_CRC_08_norm_visium, subset = nCount_Spatial > 100)
+DLS_CRC_08_tumor_QC <- subset(DLS_CRC_08_tumor_visium, subset = nCount_Spatial > 100)
+```
+
+```{r}
+SpatialFeaturePlot(DLS_CRC_03_norm_QC, features = "nCount_Spatial", pt.size.factor = 4) + ggtitle("DLS_CRC_03_Normal")
+SpatialFeaturePlot(DLS_CRC_03_tumor_QC, features = "nCount_Spatial", pt.size.factor = 4) + ggtitle("DLS_CRC_03_Tumor")
+SpatialFeaturePlot(DLS_CRC_06_norm_QC, features = "nCount_Spatial", pt.size.factor = 4) + ggtitle("DLS_CRC_06_Normal")
+SpatialFeaturePlot(DLS_CRC_07_tumor_QC, features = "nCount_Spatial", pt.size.factor = 5) + ggtitle("DLS_CRC_07_Tumor")
+SpatialFeaturePlot(DLS_CRC_08_norm_QC, features = "nCount_Spatial", pt.size.factor = 6) + ggtitle("DLS_CRC_08_Normal")
+SpatialFeaturePlot(DLS_CRC_08_tumor_QC, features = "nCount_Spatial", pt.size.factor = 5) + ggtitle("DLS_CRC_08_Tumor")
+```
+
+# Define probe names and groups
+```{r}
+probe_map <- read.csv(file.path(scripts_path, "probe_lists/probe_map_bacteria.csv"), header = TRUE, stringsAsFactors = FALSE)
+
+probe_map$Name <- gsub("_", "-", probe_map$Name)
+probe_map$List <- gsub("_", "-", probe_map$List)
+probe_map <- probe_map[probe_map$Name != "Streptococcaceae-probe10", ]
+custom_probes <- probe_map$Name[!grepl("GAPDH", probe_map$Name, ignore.case = TRUE)]
+```
+
+# Integration
+```{r}
+pcs=50
+dims=30
+hvg=5000
+res=0.2
+
+obj_list_micro <- list(
+  DLS_CRC_03_norm_QC,
+  DLS_CRC_03_tumor_QC,
+  DLS_CRC_06_norm_QC,
+  DLS_CRC_07_tumor_QC,
+  DLS_CRC_08_norm_QC,
+  DLS_CRC_08_tumor_QC
+)
+
+obj_list_micro <- lapply(obj_list_micro, function(obj) {
+  SCTransform(obj, assay = "Spatial", return.only.var.genes = FALSE, verbose = FALSE)
+})
+features <- SelectIntegrationFeatures(object.list = obj_list_micro, nfeatures = hvg)
+
+visium_merged_micro <- merge(x = obj_list_micro[[1]], y = obj_list_micro[2:6], merge.data = TRUE)
+
+names(visium_merged_micro@images) <- c("CRC_03_Normal", "CRC_03_Tumor", "CRC_06_Normal", "CRC_07_Tumor", "CRC_08_Normal", "CRC_08_Tumor")
+
+VariableFeatures(visium_merged_micro) <- features
+
+visium_merged_micro <- RunPCA(
+  visium_merged_micro,
+  assay    = "SCT",
+  features = features,
+  npcs     = pcs,
+  verbose  = FALSE
+)
+
+visium_merged_micro <- IntegrateLayers(
+  visium_merged_micro,
+  HarmonyIntegration,
+  orig.reduction = "pca",
+  new.reduction  = "harmony",
+  group.by.vars  = "sample"
+)
+
+visium_merged_micro <- FindNeighbors(visium_merged_micro, reduction = "harmony", dims = 1:dims)
+visium_merged_micro <- FindClusters(visium_merged_micro, resolution = res)
+visium_merged_micro <- RunUMAP(visium_merged_micro, reduction = "harmony", dims = 1:dims, verbose = FALSE)
+
+DimPlot(visium_merged_micro, reduction = "umap", label = TRUE, label.box = TRUE) +
+  scale_color_tableau(palette = "Tableau 20") +
+  scale_fill_tableau(palette = "Tableau 20") +
+  theme_classic()
+
+DimPlot(visium_merged_micro, reduction = "umap", group.by = "sample") +
+  scale_color_tableau(palette = "Tableau 20") +
+  theme_classic()
+```
+
+```{r}
+# Metadata Edits
+obj$sample_type <- ifelse(grepl("Normal", obj$sample), "Normal", "Tumor")
+obj$sample <- gsub("_", " ", obj$sample)
+```
+
+# Integrated UMAP by sample (Fig 2a)
+```{r}
+DimPlot(obj, reduction = "umap", group.by = "sample", label = FALSE, pt.size = .1) + 
+  scale_color_tableau(palette = "Tableau 20") +
+  theme_classic()
+```
+
+# Cluster sample distribution (Fig 2b)
+```{r}
+sample_cluster <- obj@meta.data %>%
+  group_by(seurat_clusters, sample) %>%
+  summarise(n = n(), .groups = 'drop')
+
+ggplot(sample_cluster, aes(x = seurat_clusters, y = n, fill = sample)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_tableau(palette = "Tableau 20") +
+  theme_classic() +
+  xlab("Cluster") +
+  ylab("Number of Spots")
+```
+
+# Differential Expression
+```{r}
+all_features <- rownames(obj[["SCT"]])
+
+VariableFeatures(obj) <- all_features
+obj <- GetResidual(obj, features = VariableFeatures(obj))
+obj <- PrepSCTFindMarkers(obj)
+markers <- FindAllMarkers(obj, assay = "SCT", only.pos = TRUE)
+```
+
+```{r}
+markers_ordered <- markers %>%
+  group_by(cluster) %>%
+  arrange(desc(avg_log2FC), .by_group = TRUE) %>%
+  ungroup()
+
+markers_top10_log2FC <- markers %>%
+  filter(avg_log2FC >= 0.5) %>%
+  group_by(cluster) %>%
+  slice_max(order_by = avg_log2FC, n = 10, with_ties = FALSE) %>%
+  ungroup()
+
+
+markers_top10_pct10 <- markers %>%
+  filter(p_val_adj < 0.05, pct.1 >= 0.1, avg_log2FC >= 0.5) %>%
+  group_by(cluster) %>%
+  slice_max(order_by = avg_log2FC, n = 10, with_ties = FALSE) %>%
+  ungroup()
+```
+
+```{r}
+obj <- NormalizeData(obj, assay = "Spatial")
+obj <- ScaleData(obj, assay = "Spatial", features = rownames(obj))
+```
+
+# Top cluster markers heatmap (Fig 2c)
+```{r}
+DoHeatmap(
+  obj,
+  features = unique(markers_top10_pct10$gene),
+  group.by = "seurat_clusters",
+  assay = "Spatial",
+  slot = "scale.data",
+  disp.min = -2,
+  disp.max = 2,
+  angle = 45,
+  size = 3,
+  group.colors = cluster_colors) +
+  theme(
+    axis.text.y = element_text(size = 9),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+  )
+```
+
+```{r}
+cluster_colors <- c(
+  "0"  = "#1F77B4",  # Circular Smooth Muscle
+  "1"  = "#C7C7C7",  # High Mitochondrial
+  "2"  = "#2CA02C",  # Goblet Cells
+  "3"  = "#9467BD",  # Fibroblast 1
+  "4"  = "#98DF8A",  # Colonocytes
+  "5"  = "#FFBB78",  # Mixed Epithelial
+  "6"  = "#FF7F0E",  # Tumor Epithelial
+  "7"  = "#E377C2",  # Fibroblast 3
+  "8"  = "#17BECF",  # Myeloid/Inflammatory
+  "9"  = "#C5B0D5",  # Fibroblast 2
+  "10" = "#D62728",  # Bacteria+
+  "11" = "#9EDAE5",  # B Cells
+  "12" = "#AEC7E8"   # Muscularis/ENS
+)
+```
+
+# Sample cluster distribution (Fig 2d)
+```{r}
+sample_cluster <- obj@meta.data %>%
+  group_by(seurat_clusters, sample) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(seurat_clusters = factor(as.character(seurat_clusters), levels = as.character(0:12)))
+
+ggplot(sample_cluster, aes(x = sample, y = n, fill = seurat_clusters)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(values = cluster_colors) +
+  theme_classic() +
+  xlab("Sample") +
+  ylab("Number of Spots") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+# Integrated UMAP by cluster (Fig 2e)
+```{r}
+DimPlot(obj, group.by = "seurat_clusters", cols = cluster_colors)
+```
+
+# Spatial plots by cluster (Fig 2f)
+```{r}
+coords_df <- bind_rows(lapply(Images(obj), function(img) {
+  tc <- GetTissueCoordinates(obj, image = img) %>% as.data.frame()
+  if ("in_tissue" %in% colnames(tc)) tc <- tc[tc$in_tissue == 1, , drop = FALSE]
+  tc %>% transmute(barcode = cell, image_name = img, x = x, y = y)
+}))
+
+plot_df <- coords_df %>%
+  left_join(
+    obj@meta.data %>%
+      rownames_to_column("barcode") %>%
+      transmute(barcode, cluster = factor(as.character(seurat_clusters), levels = as.character(0:12))),
+    by = "barcode"
+  ) %>%
+  group_by(image_name) %>%
+  mutate(
+    x = (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE) + 1e-9),
+    y = (y - min(y, na.rm = TRUE)) / (max(y, na.rm = TRUE) - min(y, na.rm = TRUE) + 1e-9),
+    x_rot = x,
+    y_rot = 1 - y
+  ) %>%
+  ungroup() %>%
+  mutate(image_name = factor(image_name, levels = c(
+    "CRC_03_Normal", "CRC_06_Normal", "CRC_08_Normal",
+    "CRC_03_Tumor",  "CRC_07_Tumor",  "CRC_08_Tumor"
+  )))
+
+ggplot(plot_df, aes(x_rot, y_rot)) +
+  geom_point(aes(fill = cluster), shape = 21, size = 1.2, stroke = 0.1, color = "grey15") +
+  coord_fixed() +
+  facet_wrap(~ image_name, nrow = 2) +
+  scale_fill_manual(values = cluster_colors) +
+  theme_void() +
+  theme(
+    strip.text      = element_blank(),
+    strip.background = element_blank(),
+    panel.spacing   = unit(0.25, "lines"),
+    legend.position = "none"
+  )
+```
+
+# Add assays containing Group/Probe log1p counts
+```{r}
+expr <- GetAssayData(obj, assay = "Spatial", layer = "counts")
+
+bact_probes_all <- intersect(
+  probe_map$Name[!grepl("GAPDH", probe_map$Name, ignore.case = TRUE)], 
+  rownames(expr)
+)
+probe_by_group <- split(
+  intersect(probe_map$Name, rownames(expr)), 
+  make.names(probe_map$List[match(intersect(probe_map$Name, rownames(expr)), probe_map$Name)])
+)
+
+# Groups-level log1p counts for plotting
+group_counts <- do.call(rbind, lapply(names(probe_by_group), function(g) {
+  Matrix::colSums(expr[probe_by_group[[g]], , drop = FALSE])
+}))
+rownames(group_counts) <- names(probe_by_group)
+
+bacteria_feats <- setdiff(rownames(group_counts), make.names("GAPDH"))
+group_counts <- rbind(group_counts, AllBacteria = Matrix::colSums(group_counts[bacteria_feats, ]))
+
+obj[["Groups_log"]] <- CreateAssayObject(counts = group_counts)
+obj[["Groups_log"]] <- SetAssayData(obj[["Groups_log"]], layer = "data", new.data = log1p(group_counts))
+
+# Individual bacteria probe log1p counts for plotting 
+bact_counts <- expr[bact_probes_all, ]
+obj[["Probes_log"]] <- CreateAssayObject(counts = bact_counts)
+obj[["Probes_log"]] <- SetAssayData(obj[["Probes_log"]], layer = "data", new.data = log1p(bact_counts))
+```
+
+```{r}
+saveRDS(obj, file = file.path(out_dir, "CRC_all_integrated.rds"))
+```
+
+

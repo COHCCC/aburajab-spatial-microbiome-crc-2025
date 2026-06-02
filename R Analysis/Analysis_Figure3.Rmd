@@ -1,0 +1,544 @@
+---
+title: "Bacteria_Plotting_Paper"
+output: html_document
+date: "2026-04-20"
+---
+
+```{r}
+library(Seurat)
+library(SeuratObject)
+library(harmony)
+library(tidyverse)
+library(Matrix)
+library(patchwork)
+library(ggrepel)
+library(ggnewscale)
+library(ggsci)
+library(cowplot)
+library(scales)
+```
+
+```{r}
+scripts_path <- "path/to/scripts"
+source_dir <- "path/to/source/files"
+out_dir <- "path/to/output/files"
+
+obj <- readRDS(file.path(out_dir, "CRC_all_integrated.rds"))
+```
+
+# Spatial projection of bacteria counts (Fig 3a)
+```{r}
+bac_expr <- GetAssayData(obj, assay = "Groups_log", layer = "data")["AllBacteria", ]
+
+coords_df <- bind_rows(lapply(Images(obj), function(img) {
+  tc <- GetTissueCoordinates(obj, image = img) %>% as.data.frame()
+  if ("in_tissue" %in% colnames(tc)) tc <- tc[tc$in_tissue == 1, , drop = FALSE]
+  tc %>% transmute(barcode = cell, image_name = img, x = x, y = y)
+}))
+
+plot_df_bac <- coords_df %>%
+  group_by(image_name) %>%
+  mutate(
+    x_rot = (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE) + 1e-9),
+    y_rot = 1 - (y - min(y, na.rm = TRUE)) / (max(y, na.rm = TRUE) - min(y, na.rm = TRUE) + 1e-9)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    AllBacteria = bac_expr[barcode],
+    image_name  = factor(image_name, levels = c(
+      "CRC_03_Normal", "CRC_06_Normal", "CRC_08_Normal",
+      "CRC_03_Tumor",  "CRC_07_Tumor",  "CRC_08_Tumor"
+    ))
+  )
+
+ggplot(plot_df_bac, aes(x_rot, y_rot, fill = AllBacteria)) +
+  geom_point(shape = 21, size = 1.5, stroke = 0.1, color = "grey15") +
+  coord_fixed() +
+  facet_wrap(~ image_name, nrow = 2) +
+  scale_fill_viridis_c(option = "viridis") +
+  theme_void() +
+  theme(
+    strip.text    = element_blank(),
+    panel.spacing = unit(0.1, "lines"),
+    legend.title  = element_text(size = 14),
+    legend.text   = element_text(size = 12)
+  ) +
+  labs(fill = "Counts\n(log1p)")
+```
+
+```{r}
+probe_colors <- setNames(
+  make.names(probe_map$List[match(rownames(obj[["Probes_log"]]), probe_map$Name)]),
+  rownames(obj[["Probes_log"]])
+)
+n_genera <- length(unique(probe_colors))
+d3_colors <- pal_d3("category20")(n_genera)
+group_pal <- setNames(d3_colors, sort(unique(probe_colors)))
+```
+
+# Relative abundance bar plot (Fig 3b)
+```{r}
+count_mat <- GetAssayData(obj, assay = "Probes_log", layer = "counts")
+
+abundance_df <- as.data.frame(t(as.matrix(count_mat))) %>%
+  rownames_to_column("spot") %>%
+  mutate(sample = obj$sample[spot]) %>%
+  pivot_longer(-c(spot, sample), names_to = "probe", values_to = "count") %>%
+  mutate(microbe = probe_colors[probe]) %>%
+  filter(!is.na(microbe)) %>%
+  group_by(sample, microbe) %>%
+  summarise(total_count = sum(count), .groups = "drop") %>%
+  group_by(sample) %>%
+  mutate(rel_abundance = total_count / sum(total_count)) %>%
+  ungroup()
+
+ggplot(abundance_df, aes(x = sample, y = rel_abundance, fill = microbe)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  scale_fill_manual(values = group_pal) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(x = "Sample", y = "Relative Abundance", fill = "Microbe") +
+  theme_classic(base_size = 13) +
+  theme(
+    axis.text.x     = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
+```
+
+# Microbial Signal QC
+```{r}
+# Pull data
+counts <- GetAssayData(obj, assay = "Spatial", layer = "counts")
+norm   <- GetAssayData(obj, assay = "Spatial", layer = "data")
+probes <- intersect(custom_probes, intersect(rownames(counts), rownames(norm)))
+```
+
+```{r}
+# Part 1: Spot-level QC
+spot_threshold <- 2
+
+bact_counts_raw <- colSums(counts[probes, , drop = FALSE])
+norm_bact <- norm[probes, , drop = FALSE]
+
+second_highest_norm <- apply(norm_bact, 2, function(x) {
+  x <- sort(as.numeric(x), decreasing = TRUE)
+  if (length(x) < 2) return(NA_real_)
+  x[2]
+})
+
+keep_cells <- colnames(norm)[
+  (bact_counts_raw > 0) &
+  (!is.na(second_highest_norm)) &
+  (second_highest_norm > spot_threshold)
+]
+
+integrated_obj <- subset(obj, cells = keep_cells)
+cat("Spots remaining after spot QC:", ncol(integrated_obj), "\n")
+
+# Rebuild after subset + build matrices
+counts <- GetAssayData(integrated_obj, assay = "Spatial", layer = "counts")
+norm   <- GetAssayData(integrated_obj, assay = "Spatial", layer = "data")
+probes <- intersect(custom_probes, intersect(rownames(counts), rownames(norm)))
+
+norm_mat <- t(as.matrix(norm[probes, , drop = FALSE]))
+raw_mat  <- t(as.matrix(counts[probes, , drop = FALSE]))
+```
+
+```{r}
+# Part 2: Probe-level QC
+probe_threshold <- 4
+
+n_spots_per_probe <- colSums(norm_mat > spot_threshold)
+keep_probes <- names(n_spots_per_probe)[n_spots_per_probe >= probe_threshold]
+
+norm_mat <- norm_mat[, keep_probes, drop = FALSE]
+raw_mat  <- raw_mat[, keep_probes, drop = FALSE]
+
+keep_spots <- rowSums(norm_mat > spot_threshold) > 0
+norm_mat   <- norm_mat[keep_spots, , drop = FALSE]
+raw_mat    <- raw_mat[keep_spots, , drop = FALSE]
+
+cat("After probe QC - spots:", nrow(norm_mat), " probes:", ncol(norm_mat), "\n")
+```
+
+```{r}
+# Build Metadata
+barcodes <- rownames(norm_mat)
+
+coords <- do.call(rbind, lapply(Images(integrated_obj), function(img) {
+  GetTissueCoordinates(integrated_obj, image = img)
+}))
+coords <- coords[barcodes, , drop = FALSE]
+
+meta_df <- data.frame(
+  sample_id           = integrated_obj$sample[barcodes],
+  barcode             = barcodes,
+  x                   = round(as.numeric(coords[[1]])),
+  y                   = round(as.numeric(coords[[2]])),
+  umi_total           = integrated_obj$nCount_Spatial[barcodes],
+  bact_counts_raw     = colSums(counts[keep_probes, barcodes, drop = FALSE]),
+  bact_counts_norm    = colSums(norm[keep_probes, barcodes, drop = FALSE]),
+  second_highest_norm = apply(norm[keep_probes, barcodes, drop = FALSE], 2, function(x) {
+    x <- sort(as.numeric(x), decreasing = TRUE)
+    if (length(x) < 2) return(NA_real_)
+    x[2]
+  }),
+  sample_type         = integrated_obj$sample_type[barcodes],
+  seurat_clusters     = integrated_obj$seurat_clusters[barcodes],
+  stringsAsFactors    = FALSE
+)
+
+rownames(norm_mat) <- paste(meta_df$sample_id, meta_df$barcode,
+                            meta_df$x, meta_df$y, sep = "_")
+rownames(raw_mat)  <- rownames(norm_mat)
+rownames(meta_df)  <- rownames(norm_mat)
+
+cat("Final matrix:", nrow(norm_mat), "spots ×", ncol(norm_mat), "probes\n")
+print(table(meta_df$sample_id))
+```
+
+```{r}
+# Probe signal per sample (# of spots where each probe exceeds threshold)
+probe_signal <- data.frame(
+  probe   = colnames(norm_mat),
+  n_spots = colSums(norm_mat > spot_threshold),
+  stringsAsFactors = FALSE
+)
+
+for (sid in unique(meta_df$sample_id)) {
+  idx <- meta_df$sample_id == sid
+  probe_signal[[sid]] <- colSums(norm_mat[idx, , drop = FALSE] > spot_threshold)
+}
+
+probe_signal
+
+# UMI counts per probe after QC
+probe_umi_df <- data.frame(
+  Name = colnames(raw_mat),
+  umi  = as.numeric(colSums(raw_mat)),
+  norm = as.numeric(colSums(norm_mat)),
+  stringsAsFactors = FALSE
+)
+
+probe_umi_df
+
+write.csv(probe_signal, file.path(out_dir, "probe_signal.csv"), row.names = FALSE)
+write.csv(probe_umi_df, file.path(out_dir, "probe_umi_df.csv"), row.names = FALSE)
+```
+
+```{r}
+# Add bact_qc_pass flag to obj
+
+bact_qc_flag <- rep("No", ncol(obj))
+names(bact_qc_flag) <- colnames(obj)
+bact_qc_flag[names(bact_qc_flag) %in% meta_df$barcode] <- "Yes"
+obj$bact_qc_pass <- bact_qc_flag
+
+print(table(obj$bact_qc_pass))
+```
+
+# PCA on probes after QC
+```{r}
+# Transformations
+
+norm_zscore <- norm_mat
+for (sid in unique(meta_df$sample_id)) {
+  idx <- meta_df$sample_id == sid
+  norm_zscore[idx, ] <- scale(norm_mat[idx, , drop = FALSE])
+}
+norm_zscore[is.nan(norm_zscore)] <- 0
+
+norm_ranked <- norm_mat
+for (sid in unique(meta_df$sample_id)) {
+  idx <- meta_df$sample_id == sid
+  mat_sub <- norm_mat[idx, , drop = FALSE]
+  norm_ranked[idx, ] <- apply(mat_sub, 2, rank, ties.method = "average")
+  n_spots <- sum(idx)
+  if (n_spots > 1) norm_ranked[idx, ] <- (norm_ranked[idx, ] - 1) / (n_spots - 1)
+}
+
+norm_clr <- t(apply(raw_mat, 1, function(x) {
+  x <- x + 0.5
+  gm <- exp(mean(log(x)))
+  log(x / gm)
+}))
+colnames(norm_clr) <- colnames(raw_mat)
+
+norm_clr_zscore <- norm_clr
+for (sid in unique(meta_df$sample_id)) {
+  idx <- meta_df$sample_id == sid
+  norm_clr_zscore[idx, ] <- scale(norm_clr[idx, , drop = FALSE])
+}
+norm_clr_zscore[is.nan(norm_clr_zscore)] <- 0
+
+rclr_transform <- function(x) {
+  out <- rep(0, length(x))
+  nz <- x > 0
+  if (sum(nz) < 2) return(out)
+  gm <- exp(mean(log(x[nz])))
+  out[nz] <- log(x[nz] / gm)
+  out
+}
+norm_rclr_zscore <- t(apply(raw_mat, 1, rclr_transform))
+colnames(norm_rclr_zscore) <- colnames(raw_mat)
+for (sid in unique(meta_df$sample_id)) {
+  idx <- meta_df$sample_id == sid
+  norm_rclr_zscore[idx, ] <- scale(norm_rclr_zscore[idx, , drop = FALSE])
+}
+norm_rclr_zscore[is.nan(norm_rclr_zscore)] <- 0
+```
+
+```{r}
+# Run PCA on original and transformations
+
+pca_original <- prcomp(t(norm_mat), scale. = TRUE)
+
+transforms_all <- list(
+  "Z-score"        = norm_zscore,
+  "Rank"           = norm_ranked,
+  "CLR"            = norm_clr,
+  "CLR + Z-score"  = norm_clr_zscore,
+  "rCLR + Z-score" = norm_rclr_zscore
+)
+pca_list_all <- lapply(transforms_all, function(mat) prcomp(t(mat), scale. = TRUE))
+```
+
+# Plot PCA (Fig 3c)
+```{r, fig.width = 10, fig.height = 10}
+all_genera <- sort(unique(sub("-probe.*", "", probe_map$Name[!grepl("GAPDH", probe_map$Name)])))
+n_genera <- length(all_genera)
+d3_colors <- pal_d3("category20")(n_genera)
+group_pal <- setNames(d3_colors, all_genera)
+probe_colors <- setNames(sub("-probe.*", "", colnames(norm_mat)), colnames(norm_mat))
+
+plot_pca <- function(pca_obj, title) {
+  scores  <- as.data.frame(pca_obj$x)
+  var_exp <- summary(pca_obj)$importance[2, 1:2] * 100
+  plot_df <- data.frame(
+    x       = scores[, 1],
+    y       = scores[, 2],
+    probe   = rownames(scores),
+    microbe = probe_colors[rownames(scores)]
+  )
+  ggplot(plot_df, aes(x = x, y = y, colour = microbe)) +
+    geom_point(size = 3, alpha = 0.8) +
+    scale_colour_manual(values = group_pal) +
+    labs(
+      title = title,
+      x = paste0("PC1 (", round(var_exp[1], 1), "%)"),
+      y = paste0("PC2 (", round(var_exp[2], 1), "%)")
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(size = 10, face = "bold")
+    )
+}
+
+plot_pca_legend <- function(pca_obj) {
+  scores <- as.data.frame(pca_obj$x)
+  plot_df <- data.frame(
+    x       = scores[, 1],
+    y       = scores[, 2],
+    microbe = probe_colors[rownames(scores)]
+  )
+  ggplot(plot_df, aes(x = x, y = y, colour = microbe)) +
+    geom_point(size = 4) +
+    scale_colour_manual(values = group_pal, name = NULL) +
+    guides(colour = guide_legend(ncol = 1, override.aes = list(size = 4))) +
+    theme_void() +
+    theme(
+      legend.text  = element_text(size = 11, face = "italic"),
+      legend.position = "right"
+    )
+}
+
+legend_plot <- cowplot::get_legend(plot_pca_legend(pca_original))
+
+all_pca <- c(list("Original" = pca_original), pca_list_all)
+plots <- lapply(names(all_pca), function(name) plot_pca(all_pca[[name]], name))
+wrap_plots(c(plots, list(cowplot::ggdraw(legend_plot))), ncol = 3)
+```
+
+# Plot probes of interest (Fig 3d)
+```{r}
+bacteroides_probes <- c(
+  "Bacteroides-Phocaeicola-probe9",
+  "Bacteroides-Phocaeicola-probe10",
+  "Bacteroides-Phocaeicola-probe12"
+)
+porphyromonas_probes <- c(
+  "Porphyromonas-probe1",
+  "Porphyromonas-probe3",
+  "Porphyromonas-probe4"
+)
+
+expr_mat <- GetAssayData(obj, assay = "Probes_log", layer = "data")
+
+coords_df <- bind_rows(lapply(Images(obj), function(img) {
+  tc <- GetTissueCoordinates(obj, image = img) %>% as.data.frame()
+  if ("in_tissue" %in% colnames(tc)) tc <- tc[tc$in_tissue == 1, , drop = FALSE]
+  tc %>% transmute(barcode = cell, image_name = img, x = x, y = y)
+}))
+
+base_df <- coords_df %>%
+  left_join(
+    obj@meta.data %>%
+      rownames_to_column("barcode") %>%
+      select(barcode, sample),
+    by = "barcode"
+  ) %>%
+  filter(sample %in% c("DLS CRC 08 Normal", "DLS CRC 08 Tumor")) %>%
+  group_by(image_name) %>%
+  mutate(
+    x = (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE) + 1e-9),
+    y = (y - min(y, na.rm = TRUE)) / (max(y, na.rm = TRUE) - min(y, na.rm = TRUE) + 1e-9),
+    x_rot = x,
+    y_rot = 1 - y
+  ) %>%
+  ungroup()
+```
+
+```{r, fig.width=10, fig.height=10}
+make_expr_plot_vertical <- function(probes, title) {
+  expr_df <- as.data.frame(t(as.matrix(expr_mat[probes, , drop = FALSE]))) %>%
+    rownames_to_column("barcode")
+  
+  plot_df <- base_df %>%
+    left_join(expr_df, by = "barcode") %>%
+    pivot_longer(cols = all_of(probes), names_to = "probe", values_to = "expression") %>%
+    mutate(probe = factor(probe, levels = probes))
+  
+  make_col <- function(samp, show_legend) {
+    ggplot(filter(plot_df, sample == samp), aes(x_rot, y_rot, fill = expression)) +
+      geom_point(shape = 21, size = 1.5, stroke = 0.1, color = "grey15") +
+      coord_fixed() +
+      facet_wrap(~ probe, ncol = 1) +
+      scale_fill_viridis_c(option = "inferno", name = "Counts (log1p)") +
+      theme_classic() +
+      theme(
+        axis.title            = element_blank(),
+        axis.text             = element_blank(),
+        axis.ticks            = element_blank(),
+        axis.line             = element_blank(),
+        strip.background      = element_blank(),
+        strip.text            = element_blank(),
+        panel.spacing         = unit(0.1, "lines"),
+        legend.position       = if (show_legend) "bottom" else "none",
+        legend.direction      = "horizontal",
+        legend.title.position = "top",
+        legend.title          = element_text(size = 14),
+        legend.text           = element_text(size = 12)
+      )
+  }
+  
+  (make_col("DLS CRC 08 Normal", FALSE) | make_col("DLS CRC 08 Tumor", TRUE)) +
+    plot_annotation(title = title)
+}
+
+make_expr_plot_vertical(bacteroides_probes,   "Bacteroides — CRC 08")
+make_expr_plot_vertical(porphyromonas_probes, "Porphyromonas — CRC 08")
+```
+
+# Heatmap contour plots (Fig 3e)
+```{r}
+expr_mat_raw <- GetAssayData(obj, assay = "Probes_log", layer = "counts")
+
+expr_df <- data.frame(
+  barcode       = colnames(expr_mat_raw),
+  Bacteroides   = log1p(as.numeric(colSums(expr_mat_raw[bacteroides_probes,   , drop = FALSE]))),
+  Porphyromonas = log1p(as.numeric(colSums(expr_mat_raw[porphyromonas_probes, , drop = FALSE])))
+)
+
+img_use <- "CRC_08_Tumor"
+
+tc <- GetTissueCoordinates(obj, image = img_use) %>%
+  as.data.frame() %>%
+  transmute(
+    barcode = cell,
+    x = (x - min(x)) / (max(x) - min(x) + 1e-9),
+    y = 1 - (y - min(y)) / (max(y) - min(y) + 1e-9)
+  )
+
+plot_df <- tc %>% left_join(expr_df, by = "barcode")
+
+weighted_expand <- function(df, col, scale = 10) {
+  df %>%
+    mutate(n_rep = pmax(1, round(.data[[col]] * scale))) %>%
+    filter(.data[[col]] > 0) %>%
+    slice(rep(seq_len(n()), times = n_rep)) %>%
+    select(-n_rep)
+}
+
+bact_expanded  <- weighted_expand(plot_df %>% filter(Bacteroides   > 2), "Bacteroides",   scale = 10)
+porph_expanded <- weighted_expand(plot_df %>% filter(Porphyromonas > 2), "Porphyromonas", scale = 10)
+
+shared_max <- max(plot_df$Bacteroides, plot_df$Porphyromonas, na.rm = TRUE)
+shared_min <- min(plot_df$Bacteroides, plot_df$Porphyromonas, na.rm = TRUE)
+```
+`
+```{r}
+spatial_theme <- theme_void() +
+  theme(
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text  = element_text(size = 10),
+    plot.title   = element_text(size = 13, face = "bold.italic", hjust = 0.5)
+  )
+
+# Separate plots
+p_bact <- ggplot(plot_df, aes(x = x, y = y)) +
+  geom_point(color = "grey85", size = 1, alpha = 0.4) +
+  stat_density_2d(
+    data = bact_expanded,
+    aes(fill = after_stat(level)),
+    geom = "polygon", alpha = 0.5, bins = 12, color = NA
+  ) +
+  scale_fill_gradient(low = "#c6dbef", high = "#08519c", name = "Density") +
+  coord_fixed() +
+  spatial_theme +
+  labs(title = "Bacteroides-Phocaeicola")
+
+p_porph <- ggplot(plot_df, aes(x = x, y = y)) +
+  geom_point(color = "grey85", size = 1, alpha = 0.4) +
+  stat_density_2d(
+    data = porph_expanded,
+    aes(fill = after_stat(level)),
+    geom = "polygon", alpha = 0.5, bins = 12, color = NA
+  ) +
+  scale_fill_gradient(low = "#fcbba1", high = "#a50f15", name = "Density") +
+  coord_fixed() +
+  spatial_theme +
+  labs(title = "Porphyromonas")
+
+# Combined overlay plot
+p_combined <- ggplot(plot_df, aes(x = x, y = y)) +
+  geom_point(color = "grey85", size = 1, alpha = 0.3) +
+  stat_density_2d(
+    data = bact_expanded,
+    aes(fill = after_stat(level)),
+    geom = "polygon", alpha = 0.45, bins = 12, color = NA
+  ) +
+  scale_fill_gradient(low = "#c6dbef", high = "#08519c", name = "Bacteroides") +
+  ggnewscale::new_scale_fill() +
+  stat_density_2d(
+    data = porph_expanded,
+    aes(fill = after_stat(level)),
+    geom = "polygon", alpha = 0.45, bins = 12, color = NA
+  ) +
+  scale_fill_gradient(low = "#fcbba1", high = "#a50f15", name = "Porphyromonas") +
+  coord_fixed() +
+  spatial_theme +
+  labs(title = "Bacteroides-Phocaeicola vs Porphyromonas")
+
+
+(p_bact | p_porph) +
+  plot_annotation(
+    title = "CRC_08 Tumor",
+    theme = theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5))
+  )
+
+p_combined
+```
+```{r}
+saveRDS(obj, file.path(out_dir, "final_obj.rds"))
+```
+
