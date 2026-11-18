@@ -33,6 +33,7 @@ NCBI BLAST+ is installed as part of the conda environment. Three BLAST databases
 | `references/human_gencode/` | GENCODE comprehensive transcript sequences | [gencodegenes.org/human](https://www.gencodegenes.org/human/) |
 
 Build the two human references with `makeblastdb -dbtype nucl -parse_seqids`. GENCODE headers are pipe-delimited and must be sanitized first (`sed '/^>/s/|/ /g'`).
+
 ---
 
 ## Repository Structure
