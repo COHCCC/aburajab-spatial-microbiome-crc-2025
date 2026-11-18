@@ -24,7 +24,7 @@ conda activate microbiome
 ```
 ### BLAST Databases
 
-NCBI BLAST+ is installed as part of the conda environment. Three BLAST databases are required, built under `references/` (not version controlled):
+NCBI BLAST+ is installed as part of the conda environment. Three BLAST databases are required, built under `references/`
 
 | Directory | Database | Source |
 |---|---|---|
