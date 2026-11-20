@@ -1,0 +1,241 @@
+---
+title: "Analysis_Supp"
+output: html_document
+date: "2026-11-12"
+---
+```{r}
+library(Seurat)
+library(SeuratObject)
+library(tidyverse)
+library(patchwork)
+library(ggrepel)
+library(ggnewscale)
+library(ggsci)
+library(cowplot)
+library(scales)
+library(knitr)
+```
+
+```{r}
+out_dir <- "/coh_labs/dits/rayyan/Data/Spatial_Microbiome/Microbiome-v1/Microbiome-v1_paper_analysis/SeuratObj_Integrated"
+obj <- readRDS(file.path(out_dir, "final_obj.rds"))
+```
+
+```{r}
+cluster_colors <- c(
+  "0"  = "#1F77B4", "1"  = "#C7C7C7", "2"  = "#2CA02C", "3"  = "#9467BD",
+  "4"  = "#98DF8A", "5"  = "#FFBB78", "6"  = "#FF7F0E", "7"  = "#E377C2",
+  "8"  = "#17BECF", "9"  = "#C5B0D5", "10" = "#D62728", "11" = "#9EDAE5",
+  "12" = "#AEC7E8"
+)
+```
+
+# nCount, nFeature, and percent_mt (total, including probes)
+```{r}
+vln <- function(metric, ylab, log = FALSE) {
+  p <- ggplot(obj@meta.data, aes(seurat_clusters, .data[[metric]], fill = seurat_clusters)) +
+    geom_violin(scale = "width", linewidth = 0.25, colour = "grey20") +
+    geom_boxplot(width = 0.12, outlier.shape = NA, fill = "white",
+                 linewidth = 0.25, colour = "grey20") +
+    scale_fill_manual(values = cluster_colors) +
+    labs(x = "Cluster", y = ylab) +
+    theme_classic(base_size = 12) +
+    theme(legend.position = "none")
+  if (log) p <- p + scale_y_log10(labels = scales::comma)
+  p
+}
+
+p_umi  <- vln("nCount_Spatial",   "UMI counts per spot",       log = TRUE)
+p_gene <- vln("nFeature_Spatial", "Genes detected per spot",   log = TRUE)
+p_mt   <- vln("percent_mt",       "Mitochondrial reads (%)")
+
+p_umi
+p_gene
+p_mt
+```
+
+
+# nCount, nFeature, and percent_mt (excluding probes)
+```{r}
+counts   <- GetAssayData(obj, assay = "Spatial", layer = "counts")
+is_probe <- grepl("-probe[0-9]+$", rownames(counts))
+is_mt    <- grepl("^MT-", rownames(counts))
+
+obj$nCount_host     <- Matrix::colSums(counts[!is_probe, ])
+obj$nFeature_host   <- Matrix::colSums(counts[!is_probe, ] > 0)
+obj$percent_mt_host <- 100 * Matrix::colSums(counts[is_mt, ]) / obj$nCount_host
+```
+
+```{r}
+p_umi  <- vln("nCount_host",     "Host UMI counts per spot",     log = TRUE) + theme(axis.title.x = element_blank())
+p_gene <- vln("nFeature_host",   "Host genes detected per spot", log = TRUE) + theme(axis.title.x = element_blank())
+p_mt   <- vln("percent_mt_host", "Host mitochondrial reads (%)")
+
+p_umi
+p_gene
+p_mt
+```
+
+# Table summary of total vs host only stats
+```{r}
+tbl <- obj@meta.data %>%
+  mutate(cluster = as.character(seurat_clusters)) %>%
+  group_by(cluster) %>%
+  summarise(Spots    = n(),
+            umi_all  = median(nCount_Spatial),   umi_host  = median(nCount_host),
+            gene_all = median(nFeature_Spatial), gene_host = median(nFeature_host),
+            mt_all   = median(percent_mt),       mt_host   = median(percent_mt_host, na.rm = TRUE),
+            .groups = "drop") %>%
+  mutate(y = 12 - as.integer(cluster),
+         cluster = factor(cluster, levels = as.character(0:12)))
+
+col_order <- c("Spots", "umi_all", "umi_host", "gene_all", "gene_host", "mt_all", "mt_host")
+
+tbl_long <- tbl %>%
+  pivot_longer(-c(cluster, y), names_to = "metric", values_to = "value") %>%
+  mutate(x = match(metric, col_order),
+         label = ifelse(grepl("^mt", metric),
+                        sprintf("%.1f", value),
+                        formatC(value, format = "f", digits = 0, big.mark = ",")))
+
+hdr_sub <- tibble(x = 0:7, label = c("Cluster", "Spots", "All", "Host", "All", "Host", "All", "Host"))
+hdr_grp <- tibble(x = c(2.5, 4.5, 6.5), label = c("UMI", "Genes", "Mito (%)"))
+hdr_seg <- tibble(x0 = c(1.7, 3.7, 5.7), x1 = c(3.3, 5.3, 7.3))
+
+p_tbl <- ggplot() +
+  geom_tile(data = filter(tbl, cluster %in% c("1", "10")),
+            aes(x = 3.4, y = y), width = 8.6, height = 1, fill = "grey92") +
+  geom_tile(data = tbl, aes(x = -0.45, y = y, fill = cluster), width = 0.25, height = 0.8) +
+  geom_text(data = tbl, aes(x = 0, y = y, label = cluster), size = 3.3) +
+  geom_text(data = tbl_long,
+            aes(x = x, y = y, label = label,
+                fontface = ifelse(cluster == "10", "bold", "plain")), size = 3.3) +
+  geom_text(data = hdr_sub, aes(x = x, y = 13.7, label = label), fontface = "bold", size = 3.4) +
+  geom_text(data = hdr_grp, aes(x = x, y = 14.75, label = label), fontface = "bold", size = 3.6) +
+  geom_segment(data = hdr_seg, aes(x = x0, xend = x1, y = 14.25, yend = 14.25), linewidth = 0.4) +
+  scale_fill_manual(values = cluster_colors, guide = "none") +
+  coord_cartesian(xlim = c(-0.8, 7.6), ylim = c(-0.6, 15.2), expand = FALSE) +
+  theme_void(base_size = 12)
+
+p_tbl
+```
+
+# Top markers of the Bacteria+ cluster
+```{r}
+Idents(obj) <- "seurat_clusters"
+m10 <- FindMarkers(obj, ident.1 = "10", assay = "Spatial", only.pos = TRUE)
+
+top10 <- m10 %>%
+  rownames_to_column("gene") %>%
+  filter(!grepl("probe", gene), p_val_adj < 0.05, pct.1 >= 0.2, avg_log2FC >= 0.5) %>%
+  slice_max(order_by = avg_log2FC, n = 10, with_ties = FALSE)
+```
+
+```{r}
+p_dot <- DotPlot(obj, features = top10$gene, group.by = "seurat_clusters", assay = "Spatial") +
+  scale_y_discrete(limits = as.character(12:0)) +
+  labs(x = NULL, y = "Cluster") +
+  theme_classic(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_dot
+```
+
+```{r}
+table(obj$seurat_clusters, obj$bact_qc_pass)                            # breakdown of QC-pass spots in each cluster
+mean(obj$seurat_clusters[obj$bact_qc_pass == "Yes"] == "10")            # share of QC-pass spots in cluster 10
+mean(obj$bact_qc_pass[obj$seurat_clusters == "10"] == "Yes")            # share of cluster 10 that passes QC
+```
+
+# Density panels
+```{r}
+bacteroides_probes <- c(
+  "Bacteroides-Phocaeicola-probe9",
+  "Bacteroides-Phocaeicola-probe10",
+  "Bacteroides-Phocaeicola-probe12"
+)
+porphyromonas_probes <- c(
+  "Porphyromonas-probe1",
+  "Porphyromonas-probe3",
+  "Porphyromonas-probe4"
+)
+
+img_use <- "CRC_08_Tumor"
+
+expr_mat_raw <- GetAssayData(obj, assay = "Probes_log", layer = "counts")
+
+expr_df <- data.frame(
+  barcode       = colnames(expr_mat_raw),
+  Bacteroides   = log1p(as.numeric(Matrix::colSums(expr_mat_raw[bacteroides_probes,   , drop = FALSE]))),
+  Porphyromonas = log1p(as.numeric(Matrix::colSums(expr_mat_raw[porphyromonas_probes, , drop = FALSE]))))
+
+tc_raw <- GetTissueCoordinates(obj, image = img_use) %>% as.data.frame()
+
+plot_df <- tc_raw %>%
+  transmute(barcode = cell,
+            x = (x - min(x)) / (max(x) - min(x) + 1e-9),
+            y = 1 - (y - min(y)) / (max(y) - min(y) + 1e-9)) %>%
+  left_join(expr_df, by = "barcode")
+
+weighted_expand <- function(df, col, scale = 10) {
+  df %>%
+    mutate(n_rep = pmax(1, round(.data[[col]] * scale))) %>%
+    filter(.data[[col]] > 0) %>%
+    slice(rep(seq_len(n()), times = n_rep)) %>%
+    select(-n_rep)
+}
+```
+
+```{r}
+# default bandwidth ggplot uses (MASS::bandwidth.nrd)
+bw_default <- function(taxon, cutoff) {
+  d <- weighted_expand(filter(plot_df, .data[[taxon]] > cutoff), taxon)
+  c(x = MASS::bandwidth.nrd(d$x), y = MASS::bandwidth.nrd(d$y))
+}
+
+opts <- tibble(cutoff = c(1, 2, 3, 2, 2), h_mult = c(1, 1, 1, 0.5, 2))
+spec <- bind_rows(mutate(opts, taxon = "Bacteroides"), mutate(opts, taxon = "Porphyromonas"))
+
+bw_tbl <- spec %>%
+  rowwise() %>%
+  mutate(n_spots = sum(plot_df[[taxon]] > cutoff, na.rm = TRUE),
+         h_x = round(unname(bw_default(taxon, cutoff)["x"]) * h_mult, 4),
+         h_y = round(unname(bw_default(taxon, cutoff)["y"]) * h_mult, 4)) %>%
+  ungroup()
+print(bw_tbl, n = Inf)
+
+# bandwidth in um (kernel sd = h/4, spots are 100 um apart)
+span_x <- diff(range(tc_raw$x)); span_y <- diff(range(tc_raw$y))
+dmat <- as.matrix(dist(tc_raw[, c("x", "y")])); diag(dmat) <- Inf
+um_per_px <- 100 / median(apply(dmat, 1, min))
+
+bw_tbl %>%
+  filter(cutoff == 2, h_mult == 1) %>%
+  mutate(sd_x_um = round(h_x / 4 * span_x * um_per_px),
+         sd_y_um = round(h_y / 4 * span_y * um_per_px))
+```
+
+```{r, fig.width = 18, fig.height = 8}
+pal <- list(Bacteroides   = c("#c6dbef", "#08519c"),
+            Porphyromonas = c("#fcbba1", "#a50f15"))
+
+panel <- function(taxon, cutoff, h_mult) {
+  sub <- filter(plot_df, .data[[taxon]] > cutoff)
+  d   <- weighted_expand(sub, taxon)
+  h   <- c(MASS::bandwidth.nrd(d$x), MASS::bandwidth.nrd(d$y)) * h_mult
+  ggplot(plot_df, aes(x, y)) +
+    geom_point(color = "grey85", size = 1, alpha = 0.4) +
+    stat_density_2d(data = d, aes(fill = after_stat(level)), geom = "polygon",
+                    alpha = 0.5, bins = 12, color = NA, h = h) +
+    scale_fill_gradient(low = pal[[taxon]][1], high = pal[[taxon]][2], guide = "none") +
+    coord_fixed() +
+    labs(title = sprintf("%s\ncutoff %g | bandwidth x%g\nn = %d spots", taxon, cutoff, h_mult, nrow(sub))) +
+    theme_void() +
+    theme(plot.title = element_text(size = 9, hjust = 0.5))
+}
+
+panels <- pmap(spec, function(taxon, cutoff, h_mult) panel(taxon, cutoff, h_mult))
+
+figS3e <- wrap_plots(panels, ncol = 5)
+figS3e
+```
